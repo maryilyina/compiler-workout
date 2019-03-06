@@ -44,7 +44,35 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
+
+    let to_integer bin_val = 
+      if bin_val then 1 else 0
+
+    let to_bool int_val =
+      if int_val != 0 then true else false
+
+    let eval_binop op x y =
+      match op with
+        | "+" -> x + y
+        | "-" -> x - y
+        | "*" -> x * y
+        | "/" -> x / y
+        | "%" -> x mod y
+        | ">"  -> to_integer(x > y)
+        | "<"  -> to_integer(x < y)
+        | ">=" -> to_integer(x >= y)
+        | "<=" -> to_integer(x <= y)
+        | "==" -> to_integer(x = y)
+        | "!=" -> to_integer(x <> y)
+        | "&&" -> to_integer((to_bool x) && (to_bool y))
+        | "!!" -> to_integer((to_bool x) || (to_bool y))
+        | _    -> failwith "Not implemented"
+
+    let rec eval st expr =
+      match expr with 
+        | Const c  -> c
+        | Var v    -> st v
+        | Binop(op, x, y) -> eval_binop op (eval st x) (eval st y)
 
     (* Expression parser. You can use the following terminals:
 
@@ -78,7 +106,14 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval (s, i, o) statement = 
+      match statement with
+        | Read x -> 
+            let head::tail = i in
+            Expr.update x head s, tail, o
+        | Write e       -> (s, i, o@[Expr.eval s e])
+        | Assign (x, e) -> (Expr.update x (Expr.eval s e) s, i, o) 
+        | Seq    (a, b) -> eval (eval (s, i, o) a) b           
 
     (* Statement parser *)
     ostap (
