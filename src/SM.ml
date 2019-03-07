@@ -1,5 +1,5 @@
 open GT  
-open List     
+open Language     
        
 (* The type for the stack machine instructions *)
 @type insn =
@@ -51,7 +51,7 @@ let rec eval conf prg = match prg with
 
    Takes an input stream, a program, and returns an output stream this program calculates
 *)
-let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in o
+let run p i = let (_, (_, _, o)) = eval ([], (Expr.empty, i, [])) p in o
 
 (* Stack machine compiler
 
@@ -59,17 +59,15 @@ let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in 
 
    Takes a program in the source language and returns an equivalent program for the
    stack machine
- *)
-
-let rec compile stmt =
-  let rec compile_expr e =
-      match e with
-      | Language.Expr.Const  c         -> [CONST c]
-      | Language.Expr.Var    v         -> [LD v]
-      | Language.Expr.Binop (op, l, r) -> compile_expr l @ compile_expr r @ [ BINOP op ] 
-    in
-    match stmt with
-    | Language.Stmt.Read    v       -> [ READ; ST v ]
-    | Language.Stmt.Write   e       -> compile_expr e @ [ WRITE ]
-    | Language.Stmt.Assign (v, e)   -> compile_expr e @ [ ST v ]
-    | Language.Stmt.Seq    (e1, e2) -> compile e1 @ compile e2
+*)
+let rec compile =
+  let rec expr = function
+  | Expr.Var   x          -> [LD x]
+  | Expr.Const n          -> [CONST n]
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+  in
+  function
+  | Stmt.Seq (s1, s2)  -> compile s1 @ compile s2
+  | Stmt.Read x        -> [READ; ST x]
+  | Stmt.Write e       -> expr e @ [WRITE]
+  | Stmt.Assign (x, e) -> expr e @ [ST x]

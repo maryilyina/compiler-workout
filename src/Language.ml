@@ -79,7 +79,7 @@ module Expr =
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string
-   
+                                                                                                                  
     *)
     let ($) f x = f x
 
@@ -107,7 +107,6 @@ module Expr =
         | n:DECIMAL { Const n } 
         | -"(" expr -")"
     )
-
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -126,7 +125,7 @@ module Stmt =
 
     (* Statement evaluator
 
-          val eval : config -> t -> config
+         val eval : config -> t -> config
 
        Takes a configuration and a statement, and returns another configuration
     *)
@@ -147,8 +146,7 @@ module Stmt =
         | x:IDENT   ":="  e:!(Expr.expr)      { Assign(x, e)};
 
       parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
-    )
-      
+    ) 
   end
 
 (* The top-level definitions *)
@@ -164,3 +162,6 @@ type t = Stmt.t
 *)
 let eval p i =
   let _, _, o = Stmt.eval (Expr.empty, i, []) p in o
+
+(* Top-level parser *)
+let parse = Stmt.parse                                                     
