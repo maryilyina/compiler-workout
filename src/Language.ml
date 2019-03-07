@@ -96,7 +96,7 @@ module Expr =
           [|
             `Lefta, binop_parser ["!!"];
             `Lefta, binop_parser ["&&"];
-            `Nona,  binop_parser ["<"; ">"; "<="; ">="; "=="; "!="];
+            `Nona,  binop_parser ["<="; ">="; "<"; ">"; "=="; "!="];
             `Lefta, binop_parser ["+"; "-"];
             `Lefta, binop_parser ["*"; "/"; "%"];
           |]
