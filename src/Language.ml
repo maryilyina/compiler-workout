@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open List
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -80,8 +81,31 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
    
     *)
+    let ($) f x = f x
+
+    let binop_parser xs = 
+      List.map (
+        fun x -> ostap (- $(x)), 
+        (fun l r -> Binop (x, l, r))
+      ) xs;;
+
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      expr: 
+        !(Ostap.Util.expr
+          (fun x -> x)
+          [|
+            `Lefta, binop_parser ["!!"];
+            `Lefta, binop_parser ["&&"];
+            `Nona,  binop_parser ["<"; ">"; "<="; ">="; "=="; "!="];
+            `Lefta, binop_parser ["+"; "-"];
+            `Lefta, binop_parser ["*"; "/"; "%"];
+          |]
+          primary
+        );
+      primary: 
+          x:IDENT   { Var x } 
+        | n:DECIMAL { Const n } 
+        | -"(" expr -")"
     )
 
   end
@@ -109,15 +133,20 @@ module Stmt =
     let rec eval (s, i, o) statement = 
       match statement with
         | Read x -> 
-            let head::tail = i in
-            Expr.update x head s, tail, o
+            (let head::tail = i in
+            Expr.update x head s, tail, o)
         | Write e       -> (s, i, o@[Expr.eval s e])
         | Assign (x, e) -> (Expr.update x (Expr.eval s e) s, i, o) 
         | Seq    (a, b) -> eval (eval (s, i, o) a) b           
 
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented yet"}
+      statement: 
+          "read"    "("   x:IDENT        ")"  { Read   x    }
+        | "write"   "("   e:!(Expr.expr) ")"  { Write  e    }
+        | x:IDENT   ":="  e:!(Expr.expr)      { Assign(x, e)};
+
+      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
     )
       
   end
