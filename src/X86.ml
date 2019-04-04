@@ -156,13 +156,11 @@ let rec compile env code = match code with
             let s, env = env#pop in
             env, [Push s; Call "Lwrite"; Pop eax]
         | LD x ->
-            let s, env = env#allocate in
-            let glob = env#loc x in 
-            env, [Mov (M glob, s)]
+          let s, env = (env#global x)#allocate in
+          env, [Mov (M ("global_" ^ x), eax); Mov (eax, s)]
         | ST x ->
             let s, env = (env#global x)#pop in 
-            let glob = env#loc x in 
-            env, [Mov (s, M glob)]
+            env, [Mov (s, eax); Mov (eax, M ("global_" ^ x))]
         | BINOP op ->
             compile_binop env op
         | LABEL l  -> env, [Label l]
