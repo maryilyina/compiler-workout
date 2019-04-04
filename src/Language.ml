@@ -133,7 +133,7 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval (s, i, o) statement = 
+    let rec eval (s, i, o) statement =
       match statement with
         | Read x -> 
             (let head::tail = i in
@@ -150,10 +150,10 @@ module Stmt =
               let repeatition = While (what, body) in 
               eval (eval (s, i, o) body) repeatition)
         | RepeatUntil (body, what) ->
-            (let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
-              eval (eval (s, i, o) body) repeatition)
-
-
+            let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
+              eval (eval (s, i, o) body) repeatition
+        | Skip -> (s, i, o)
+        
     (* Statement parser *)
     ostap (
       statement: 
@@ -172,8 +172,8 @@ module Stmt =
               let expanded = List.fold_right 
                   (fun (cond, body) else_body -> 
                     If (cond, body, else_body)) elif_branch els_body 
-                    in If (what, first, expanded) 
-              }
+              in If (what, first, expanded) 
+            }
         | "while" what:!(Expr.expr) "do" body:!(parse) "od" { While (what, body) }
         | "repeat" body:!(parse) "until" what:!(Expr.expr) { RepeatUntil (body, what) }
         | "for" what:!(parse) "," cond:!(Expr.expr) "," step:!(parse) "do" body:!(parse)
