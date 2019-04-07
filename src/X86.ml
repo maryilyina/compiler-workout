@@ -88,10 +88,93 @@ open SM
      compile : env -> prg -> env * instr list
 
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
-   of x86 instructions
+   of x86 instruct_ _ = failwith "Not yet implemented"ions
 *)
-let compile env code = failwith "Not implemented"
-                                
+
+let translate_comp_oper op = match op with
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _    -> failwith ("Not supported bool operator.")
+
+let clear reg = 
+  Binop ("^", reg, reg)
+
+let divide l r s reg = 
+  [Mov (l, eax); clear edx; Cltd; IDiv r; Mov (reg, s)]
+
+let compare op l r s = 
+  [clear eax; Binop ("cmp", r, l); Set (translate_comp_oper op, "%al"); Mov (eax, s)]
+
+let rec compile_binop env op = 
+  let r, l, env  = env#pop2 in
+  let s, env = env#allocate in
+  let instr = match op with
+    | "+" 
+    | "-" 
+    | "*"  -> (
+      match (l, r) with
+        | (S _, S _) -> [Mov (l, eax); Binop (op, r, eax); Mov (eax, s)]
+        | _  -> if s = l 
+            then [Binop (op, r, l)] 
+            else [Binop (op, r, l); Mov (l, s)]
+      )
+    | "<=" 
+    | "<" 
+    | ">=" 
+    | ">" 
+    | "==" 
+    | "!=" -> (
+      match (l, r) with
+        | (S _, S _) -> [Mov (l, edx)] @ compare op edx r s
+        | _  -> compare op l r s
+      )
+    | "/"  -> divide l r s eax       
+    | "%"  -> divide l r s edx
+    | "!!" -> [clear eax; Mov (l, edx); Binop ("!!", r, edx); Set ("nz", "%al"); Mov (eax, s)]
+    | "&&" -> [ clear eax; clear edx; 
+                Binop ("cmp", L 0, l);  Set ("ne", "%al");
+                Binop ("cmp", L 0, r);  Set ("ne", "%dl");
+                Binop ("&&", edx, eax); Mov (eax, s)
+              ]
+
+    | _ -> failwith ("Not supported binary operand.")
+
+  in env, instr
+
+let rec compile env code = match code with
+  | [] -> env, []
+  | instr :: code' ->
+      let env, asm = 
+        match instr with
+        | CONST n -> 
+            let s, env = env#allocate in 
+            env, [Mov (L n, s)]
+        | READ -> 
+            let s, env = env#allocate in
+            env, [Call "Lread"; Mov (eax, s)]
+        | WRITE -> 
+            let s, env = env#pop in
+            env, [Push s; Call "Lwrite"; Pop eax]
+        | LD x ->
+          let s, env = (env#global x)#allocate in
+          env, [Mov (M ("global_" ^ x), eax); Mov (eax, s)]
+        | ST x ->
+            let s, env = (env#global x)#pop in 
+            env, [Mov (s, eax); Mov (eax, M ("global_" ^ x))]
+        | BINOP op ->
+            compile_binop env op
+        | LABEL l  -> env, [Label l]
+        | JMP l    -> env, [Jmp l]
+        | CJMP (cond, l) -> let h, env = env#pop in env, [Binop ("cmp", L 0, h); CJmp (cond, l)]
+        | _ -> failwith("Not supported instruction.")
+    in
+      let env, asm' = compile env code' in 
+      env, asm @ asm'
+
 (* A set of strings *)           
 module S = Set.Make (String)
 
@@ -120,7 +203,7 @@ class env =
 	| []                            -> ebx     , 0
 	| (S n)::_                      -> S (n+1) , n+1
 	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
+  | (M _)::s                      -> allocate' s
 	| _                             -> S 0     , 1
 	in
 	allocate' stack

@@ -2,6 +2,7 @@
    The library provides "@type ..." syntax extension and plugins like show, etc.
 *)
 open GT
+open List
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
@@ -81,10 +82,32 @@ module Expr =
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    ostap (                                      
-      parse: empty {failwith "Not implemented"}
+    let ($) f x = f x
+
+    let binop_parser xs = 
+      List.map (
+        fun x -> ostap (- $(x)), 
+        (fun l r -> Binop (x, l, r))
+      ) xs;;
+
+    ostap (
+      expr: 
+        !(Ostap.Util.expr
+          (fun x -> x)
+          [|
+            `Lefta, binop_parser ["!!"];
+            `Lefta, binop_parser ["&&"];
+            `Nona,  binop_parser ["<="; ">="; "<"; ">"; "=="; "!="];
+            `Lefta, binop_parser ["+"; "-"];
+            `Lefta, binop_parser ["*"; "/"; "%"];
+          |]
+          primary
+        );
+      primary: 
+          x:IDENT   { Var x } 
+        | n:DECIMAL { Const n } 
+        | -"(" expr -")"
     )
-    
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -93,10 +116,10 @@ module Stmt =
 
     (* The type for statements *)
     @type t =
-    (* read into the variable           *) | Read   of string
-    (* write the value of an expression *) | Write  of Expr.t
-    (* assignment                       *) | Assign of string * Expr.t
-    (* composition                      *) | Seq    of t * t 
+    (* read into the variable           *) | Read         of string
+    (* write the value of an expression *) | Write        of Expr.t
+    (* assignment                       *) | Assign       of string * Expr.t
+    (* composition                      *) | Seq          of t * t 
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
@@ -111,13 +134,54 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemnted"
-         
+    let rec eval (s, i, o) statement =
+      match statement with
+        | Read x -> 
+            (let head::tail = i in
+            Expr.update x head s, tail, o)
+        | Write e       -> (s, i, o@[Expr.eval s e])
+        | Assign (x, e) -> (Expr.update x (Expr.eval s e) s, i, o) 
+        | Seq    (a, b) -> eval (eval (s, i, o) a) b  
+        | If (what, first, second)  -> 
+              eval (s, i, o) 
+              (if Expr.eval s what == 0 then second else first)
+        | While (what, body)  ->
+            (if Expr.eval s what == 0 then (s, i, o)
+            else 
+              let repeatition = While (what, body) in 
+              eval (eval (s, i, o) body) repeatition)
+        | RepeatUntil (body, what) ->
+            let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
+              eval (eval (s, i, o) body) repeatition
+        | Skip -> (s, i, o)
+        
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
-    )
-      
+      statement: 
+          "read"    "("   x:IDENT        ")"  { Read   x    }
+        | "write"   "("   e:!(Expr.expr) ")"  { Write  e    }
+        | x:IDENT   ":="  e:!(Expr.expr)      { Assign(x, e)}
+        
+        | "if" what:!(Expr.expr) "then" first:!(parse)
+          elif_branch: (%"elif" !(Expr.expr) %"then" !(parse))*
+          els_branch:  (%"else" !(parse))?
+          "fi" { 
+              let els_body = match els_branch with
+                | Some x -> x
+                | _ -> Skip
+              in 
+              let expanded = List.fold_right 
+                  (fun (cond, body) else_body -> 
+                    If (cond, body, else_body)) elif_branch els_body 
+              in If (what, first, expanded) 
+            }
+        | "while" what:!(Expr.expr) "do" body:!(parse) "od" { While (what, body) }
+        | "repeat" body:!(parse) "until" what:!(Expr.expr) { RepeatUntil (body, what) }
+        | "for" what:!(parse) "," cond:!(Expr.expr) "," step:!(parse) "do" body:!(parse)
+          "od" { Seq (what, While (cond, Seq (body, step))) }
+        | "skip" { Skip };
+      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
+    ) 
   end
 
 (* Function and procedure definitions *)
