@@ -27,43 +27,51 @@ type config = (prg * State.t) list * int list * Expr.config
 
 (* Stack machine interpreter
 
-     val eval : config -> prg -> config
+     val eval : env -> config -> prg -> config
 
    Takes a configuration and a program, and returns a configuration as a result
  *) 
- 
-let execute_instr (stack, (s, i, o)) instr = match instr with 
-  | BINOP op -> 
-      let y :: x :: rest = stack in 
-      ((Language.Expr.eval_binop op x y) :: rest, (s, i, o)) 
-  | CONST c -> (c :: stack, (s, i, o))
-  | READ -> 
-      let z :: rest = i in
-      (z :: stack, (s, rest, o))
-  | WRITE -> 
-      let z :: rest = stack in
-      (rest, (s, i, o @ [z]))
-  | LD x -> ((s x) :: stack, (s, i, o))
-  | ST x -> 
-      let z :: rest = stack in
-      (rest, (Language.Expr.update x z s, i, o))
-  | LABEL _ -> (stack, (s, i, o))
+
+
 
 let rec eval env conf prg = match prg with
   | [] -> conf
+(*
   | _  -> (
+    let (control_stack, stack, (s, i, o)) = conf in
     let instr :: rest = prg in 
     match instr with 
       | LABEL x            -> eval env conf rest
       | JMP   label        -> eval env conf (env#labeled label)
       | CJMP  (cond, label) -> (
-        let (stack, state) = conf in
         let z :: stack_rest = stack in match cond with 
-          | "z"  -> (if z <> 0 then eval env (stack_rest, state) rest else eval env (stack_rest, state) (env#labeled label))
-          | "nz" -> (if z <> 0 then eval env (stack_rest, state) (env#labeled label) else eval env (stack_rest, state) rest )
+          | "z"  -> (
+                      if z <> 0 then eval env (control_stack, stack_rest, (s, i, o)) rest 
+                      else eval env (control_stack, stack_rest, (s, i, o)) (env#labeled label))
+          | "nz" -> (
+                      if z <> 0 then eval env (control_stack, stack_rest, (s, i, o)) (env#labeled label) 
+                      else eval env (control_stack, stack_rest, (s, i, o)) rest )
       )
+      | BINOP op -> 
+      let y :: x :: stack_rest = stack in 
+      eval env (control_stack, (Language.Expr.to_func op x y) :: stack_rest, (s, i, o)) rest
+
+      | CONST c -> 
+          eval env (control_stack, c :: stack, (s, i, o)) rest
+      | READ -> 
+          let z :: stack_rest = i in
+          eval env (control_stack, z :: stack, (s, stack_rest, o)) rest
+      | WRITE -> 
+          let z :: stack_rest = stack in
+          eval env (control_stack, stack_rest, (s, i, o @ [z])) rest
+      | LD x -> eval env (control_stack, (s x) :: stack, (s, i, o)) rest
+      | ST x -> 
+          let z :: stack_rest = stack in
+          eval env (control_stack, stack_rest, ((Language.State.update x z s), i, o)) rest
+
       | _ -> eval env (execute_instr conf instr) rest
     )
+    *)
 
 (* Top-level evaluation
 
@@ -105,7 +113,7 @@ let rec compile_constr p after_label = match p with
     | Stmt.Assign (x, e)  -> (compile_expr e @ [ST x]), false
     | Stmt.Seq    (a, b)  ->  let label = lables_constr#get_label in
                               let (prg_a, used_a) = compile_constr a label in
-                               let (prg_b, used_b) = compile_constr b after_label in
+                              let (prg_b, used_b) = compile_constr b after_label in
                               prg_a @ (if used_a then [LABEL label] else []) @ prg_b, used_b
     | Stmt.Skip -> [], false
     

@@ -38,6 +38,7 @@ module State =
 
   end
     
+
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
@@ -78,37 +79,33 @@ module Expr =
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
          
     (* Expression parser. You can use the following terminals:
-
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    let ($) f x = f x
-
-    let binop_parser xs = 
-      List.map (
-        fun x -> ostap (- $(x)), 
-        (fun l r -> Binop (x, l, r))
-      ) xs;;
-
-    ostap (
-      expr: 
-        !(Ostap.Util.expr
-          (fun x -> x)
-          [|
-            `Lefta, binop_parser ["!!"];
-            `Lefta, binop_parser ["&&"];
-            `Nona,  binop_parser ["<="; ">="; "<"; ">"; "=="; "!="];
-            `Lefta, binop_parser ["+"; "-"];
-            `Lefta, binop_parser ["*"; "/"; "%"];
-          |]
-          primary
-        );
-      primary: 
-          x:IDENT   { Var x } 
-        | n:DECIMAL { Const n } 
-        | -"(" expr -")"
+    ostap (                                      
+      parse:
+	  !(Ostap.Util.expr 
+             (fun x -> x)
+	     (Array.map (fun (a, s) -> a, 
+                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+                        ) 
+              [|                
+		`Lefta, ["!!"];
+		`Lefta, ["&&"];
+		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+		`Lefta, ["+" ; "-"];
+		`Lefta, ["*" ; "/"; "%"];
+              |] 
+	     )
+	     primary);
+      
+      primary:
+        n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | -"(" parse -")"
     )
-  end
+    
+end
                     
 (* Simple statements: syntax and sematics *)
 module Stmt =
@@ -134,36 +131,51 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    let rec eval (s, i, o) statement =
-      match statement with
+    let rec eval env (s, i, o) statement = match statement with
         | Read x -> 
             (let head::tail = i in
-            Expr.update x head s, tail, o)
-        | Write e       -> (s, i, o@[Expr.eval s e])
-        | Assign (x, e) -> (Expr.update x (Expr.eval s e) s, i, o) 
-        | Seq    (a, b) -> eval (eval (s, i, o) a) b  
+            State.update x head s, tail, o)
+        | Write e       -> (s, i, o @ [Expr.eval s e])
+        | Assign (x, e) -> (State.update x (Expr.eval s e) s, i, o) 
+        | Seq    (a, b) -> eval env (eval env (s, i, o) a) b  
         | If (what, first, second)  -> 
-              eval (s, i, o) 
+              eval env (s, i, o) 
               (if Expr.eval s what == 0 then second else first)
         | While (what, body)  ->
             (if Expr.eval s what == 0 then (s, i, o)
             else 
               let repeatition = While (what, body) in 
-              eval (eval (s, i, o) body) repeatition)
+              eval env (eval env (s, i, o) body) repeatition)
         | RepeatUntil (body, what) ->
             let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
-              eval (eval (s, i, o) body) repeatition
+              eval env (eval env (s, i, o) body) repeatition
         | Skip -> (s, i, o)
+        (*
+        | Call (func, param_exprs)    -> 
+            let (args, locals, body) = env#definition func in
+            let params = List.map (Expr.eval s) param_exprs in
+            let upd s x v = State.update x v s in
+
+            let s' = State.push_scope s (args @ locals) in
+            let folded_s' = List.fold_left2 upd s' args params in
+            let (s'', i, o) = eval env (folded_s', i, o) body in
+            (State.drop_scope s'' s, i, o)
+            *)
         
     (* Statement parser *)
     ostap (
+
+      parse: empty {failwith "Not yet implemented"}
+      (*call_statement:
+        funct:IDENT "(" args:( !(Expr.parse) )* ")" { Call (funct, args) };
+
       statement: 
           "read"    "("   x:IDENT        ")"  { Read   x    }
-        | "write"   "("   e:!(Expr.expr) ")"  { Write  e    }
-        | x:IDENT   ":="  e:!(Expr.expr)      { Assign(x, e)}
+        | "write"   "("   e:!(Expr.parse) ")"  { Write  e    }
+        | x:IDENT   ":="  e:!(Expr.parse)      { Assign(x, e)}
         
-        | "if" what:!(Expr.expr) "then" first:!(parse)
-          elif_branch: (%"elif" !(Expr.expr) %"then" !(parse))*
+        | "if" what:!(Expr.parse) "then" first:!(parse)
+          elif_branch: (%"elif" !(Expr.parse) %"then" !(parse))*
           els_branch:  (%"else" !(parse))?
           "fi" { 
               let els_body = match els_branch with
@@ -175,24 +187,37 @@ module Stmt =
                     If (cond, body, else_body)) elif_branch els_body 
               in If (what, first, expanded) 
             }
-        | "while" what:!(Expr.expr) "do" body:!(parse) "od" { While (what, body) }
-        | "repeat" body:!(parse) "until" what:!(Expr.expr) { RepeatUntil (body, what) }
-        | "for" what:!(parse) "," cond:!(Expr.expr) "," step:!(parse) "do" body:!(parse)
+        | "while" what:!(Expr.parse) "do" body:!(parse) "od" { While (what, body) }
+        | "repeat" body:!(parse) "until" what:!(Expr.parse) { RepeatUntil (body, what) }
+        | "for" what:!(parse) "," cond:!(Expr.parse) "," step:!(parse) "do" body:!(parse)
           "od" { Seq (what, While (cond, Seq (body, step))) }
-        | "skip" { Skip };
-      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
+        | "skip" { Skip }
+        | call:call_statement { call };
+
+      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement*)
     ) 
   end
 
 (* Function and procedure definitions *)
+
+let get_or_default def_val = function
+  | Some x -> x
+  | _      -> def_val
+
 module Definition =
   struct
 
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (     
-      parse: empty {failwith "Not implemented"}
+    ostap (  
+                                          
+      parse: empty {failwith "Not yet implemented"}
+      (*
+        "fun" funct:IDENT "(" args:(IDENT)* ")"
+        locals:(%"local" (IDENT) ?
+        "{" body:!(Stmt.parse) "}"
+        { funct, (args, get_or_default [] locals, body) }*)
     )
 
   end

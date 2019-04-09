@@ -146,7 +146,7 @@ let rec compile_binop env op =
   in env, instr
 
 let rec compile env code = match code with
-  | [] -> env, []
+  | [] -> env, [] (*)
   | instr :: code' ->
       let env, asm = 
         match instr with
