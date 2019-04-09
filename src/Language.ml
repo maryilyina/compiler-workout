@@ -37,6 +37,7 @@ module State =
 
   end
     
+
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
@@ -58,75 +59,66 @@ module Expr =
     *)
       
     (* Expression evaluator
-
           val eval : state -> t -> int
  
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
-    *)
-
-    let to_integer bin_val = 
-      if bin_val then 1 else 0
-
-    let to_bool int_val =
-      if int_val != 0 then true else false
-
-    let eval_binop op x y =
+    *)                                                       
+    let to_func op =
+      let bti   = function true -> 1 | _ -> 0 in
+      let itb b = b <> 0 in
+      let (|>) f g   = fun x y -> f (g x y) in
       match op with
-        | "+" -> x + y
-        | "-" -> x - y
-        | "*" -> x * y
-        | "/" -> x / y
-        | "%" -> x mod y
-        | ">"  -> to_integer(x > y)
-        | "<"  -> to_integer(x < y)
-        | ">=" -> to_integer(x >= y)
-        | "<=" -> to_integer(x <= y)
-        | "==" -> to_integer(x = y)
-        | "!=" -> to_integer(x <> y)
-        | "&&" -> to_integer((to_bool x) && (to_bool y))
-        | "!!" -> to_integer((to_bool x) || (to_bool y))
-        | _    -> failwith "Not implemented"
-
-    let rec eval st expr =
-      match expr with 
-        | Const c  -> c
-        | Var v    -> st v
-        | Binop(op, x, y) -> eval_binop op (eval st x) (eval st y)
+      | "+"  -> (+)
+      | "-"  -> (-)
+      | "*"  -> ( * )
+      | "/"  -> (/)
+      | "%"  -> (mod)
+      | "<"  -> bti |> (< )
+      | "<=" -> bti |> (<=)
+      | ">"  -> bti |> (> )
+      | ">=" -> bti |> (>=)
+      | "==" -> bti |> (= )
+      | "!=" -> bti |> (<>)
+      | "&&" -> fun x y -> bti (itb x && itb y)
+      | "!!" -> fun x y -> bti (itb x || itb y)
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
+    
+    let rec eval st expr =      
+      match expr with
+      | Const n -> n
+      | Var   x -> State.eval st x
+      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
 
     (* Expression parser. You can use the following terminals:
-
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
-    let ($) f x = f x
-
-    let binop_parser xs = 
-      List.map (
-        fun x -> ostap (- $(x)), 
-        (fun l r -> Binop (x, l, r))
-      ) xs;;
-
-    ostap (
-      expr: 
-        !(Ostap.Util.expr
-          (fun x -> x)
-          [|
-            `Lefta, binop_parser ["!!"];
-            `Lefta, binop_parser ["&&"];
-            `Nona,  binop_parser ["<="; ">="; "<"; ">"; "=="; "!="];
-            `Lefta, binop_parser ["+"; "-"];
-            `Lefta, binop_parser ["*"; "/"; "%"];
-          |]
-          primary
-        );
-      primary: 
-          x:IDENT   { Var x } 
-        | n:DECIMAL { Const n } 
-        | -"(" expr -")"
+    ostap (                                      
+      parse:
+	  !(Ostap.Util.expr 
+             (fun x -> x)
+	     (Array.map (fun (a, s) -> a, 
+                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+                        ) 
+              [|                
+		`Lefta, ["!!"];
+		`Lefta, ["&&"];
+		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+		`Lefta, ["+" ; "-"];
+		`Lefta, ["*" ; "/"; "%"];
+              |] 
+	     )
+	     primary);
+      
+      primary:
+        n:DECIMAL {Const n}
+      | x:IDENT   {Var x}
+      | -"(" parse -")"
     )
-  end
+    
+end
                     
 (* Simple statements: syntax and sematics *)
 module Stmt =
@@ -141,7 +133,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If           of Expr.t * t * t
     (* loop with a pre-condition        *) | While        of Expr.t * t
-    (* loop with a post-condition       *) | RepeatUntil  of t * Expr.t  with show
+    (* loop with a post-condition       *) | RepeatUntil  of t * Expr.t
     (* call a procedure                 *) | Call         of string * Expr.t list with show
                                                                     
     (* The type of configuration: a state, an input stream, an output stream *)
@@ -158,36 +150,51 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval (s, i, o) statement =
-      match statement with
+    let rec eval env (s, i, o) statement = match statement with
         | Read x -> 
             (let head::tail = i in
-            Expr.update x head s, tail, o)
-        | Write e       -> (s, i, o@[Expr.eval s e])
-        | Assign (x, e) -> (Expr.update x (Expr.eval s e) s, i, o) 
-        | Seq    (a, b) -> eval (eval (s, i, o) a) b  
+            State.update x head s, tail, o)
+        | Write e       -> (s, i, o @ [Expr.eval s e])
+        | Assign (x, e) -> (State.update x (Expr.eval s e) s, i, o) 
+        | Seq    (a, b) -> eval env (eval env (s, i, o) a) b  
         | If (what, first, second)  -> 
-              eval (s, i, o) 
+              eval env (s, i, o) 
               (if Expr.eval s what == 0 then second else first)
         | While (what, body)  ->
             (if Expr.eval s what == 0 then (s, i, o)
             else 
               let repeatition = While (what, body) in 
-              eval (eval (s, i, o) body) repeatition)
+              eval env (eval env (s, i, o) body) repeatition)
         | RepeatUntil (body, what) ->
             let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
-              eval (eval (s, i, o) body) repeatition
+              eval env (eval env (s, i, o) body) repeatition
         | Skip -> (s, i, o)
+        (*
+        | Call (func, param_exprs)    -> 
+            let (args, locals, body) = env#definition func in
+            let params = List.map (Expr.eval s) param_exprs in
+            let upd s x v = State.update x v s in
+
+            let s' = State.push_scope s (args @ locals) in
+            let folded_s' = List.fold_left2 upd s' args params in
+            let (s'', i, o) = eval env (folded_s', i, o) body in
+            (State.drop_scope s'' s, i, o)
+            *)
         
     (* Statement parser *)
     ostap (
+
+      parse: empty {failwith "Not yet implemented"}
+      (*call_statement:
+        funct:IDENT "(" args:( !(Expr.parse) )* ")" { Call (funct, args) };
+
       statement: 
           "read"    "("   x:IDENT        ")"  { Read   x    }
-        | "write"   "("   e:!(Expr.expr) ")"  { Write  e    }
-        | x:IDENT   ":="  e:!(Expr.expr)      { Assign(x, e)}
+        | "write"   "("   e:!(Expr.parse) ")"  { Write  e    }
+        | x:IDENT   ":="  e:!(Expr.parse)      { Assign(x, e)}
         
-        | "if" what:!(Expr.expr) "then" first:!(parse)
-          elif_branch: (%"elif" !(Expr.expr) %"then" !(parse))*
+        | "if" what:!(Expr.parse) "then" first:!(parse)
+          elif_branch: (%"elif" !(Expr.parse) %"then" !(parse))*
           els_branch:  (%"else" !(parse))?
           "fi" { 
               let els_body = match els_branch with
@@ -199,24 +206,37 @@ module Stmt =
                     If (cond, body, else_body)) elif_branch els_body 
               in If (what, first, expanded) 
             }
-        | "while" what:!(Expr.expr) "do" body:!(parse) "od" { While (what, body) }
-        | "repeat" body:!(parse) "until" what:!(Expr.expr) { RepeatUntil (body, what) }
-        | "for" what:!(parse) "," cond:!(Expr.expr) "," step:!(parse) "do" body:!(parse)
+        | "while" what:!(Expr.parse) "do" body:!(parse) "od" { While (what, body) }
+        | "repeat" body:!(parse) "until" what:!(Expr.parse) { RepeatUntil (body, what) }
+        | "for" what:!(parse) "," cond:!(Expr.parse) "," step:!(parse) "do" body:!(parse)
           "od" { Seq (what, While (cond, Seq (body, step))) }
-        | "skip" { Skip };
-      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
+        | "skip" { Skip }
+        | call:call_statement { call };
+
+      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement*)
     ) 
   end
 
 (* Function and procedure definitions *)
+
+let get_or_default def_val = function
+  | Some x -> x
+  | _      -> def_val
+
 module Definition =
   struct
 
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (                                      
+    ostap (  
+                                          
       parse: empty {failwith "Not yet implemented"}
+      (*
+        "fun" funct:IDENT "(" args:(IDENT)* ")"
+        locals:(%"local" (IDENT) ?
+        "{" body:!(Stmt.parse) "}"
+        { funct, (args, get_or_default [] locals, body) }*)
     )
 
   end
