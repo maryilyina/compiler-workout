@@ -2,7 +2,6 @@
    The library provides "@type ..." syntax extension and plugins like show, etc.
 *)
 open GT
-open List
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
@@ -38,7 +37,6 @@ module State =
 
   end
     
-
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
@@ -79,6 +77,7 @@ module Expr =
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
          
     (* Expression parser. You can use the following terminals:
+
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
@@ -105,7 +104,7 @@ module Expr =
       | -"(" parse -")"
     )
     
-end
+  end
                     
 (* Simple statements: syntax and sematics *)
 module Stmt =
@@ -113,10 +112,10 @@ module Stmt =
 
     (* The type for statements *)
     @type t =
-    (* read into the variable           *) | Read         of string
-    (* write the value of an expression *) | Write        of Expr.t
-    (* assignment                       *) | Assign       of string * Expr.t
-    (* composition                      *) | Seq          of t * t 
+    (* read into the variable           *) | Read   of string
+    (* write the value of an expression *) | Write  of Expr.t
+    (* assignment                       *) | Assign of string * Expr.t
+    (* composition                      *) | Seq    of t * t 
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
@@ -131,6 +130,7 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
+    
     let rec eval env (s, i, o) statement = match statement with
         | Read x -> 
             (let head::tail = i in
@@ -146,27 +146,21 @@ module Stmt =
             else 
               let repeatition = While (what, body) in 
               eval env (eval env (s, i, o) body) repeatition)
-        | RepeatUntil (body, what) ->
+        | Repeat (body, what) ->
             let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
               eval env (eval env (s, i, o) body) repeatition
         | Skip -> (s, i, o)
-        (*
         | Call (func, param_exprs)    -> 
             let (args, locals, body) = env#definition func in
             let params = List.map (Expr.eval s) param_exprs in
-            let upd s x v = State.update x v s in
-
-            let s' = State.push_scope s (args @ locals) in
-            let folded_s' = List.fold_left2 upd s' args params in
-            let (s'', i, o) = eval env (folded_s', i, o) body in
-            (State.drop_scope s'' s, i, o)
-            *)
-        
+            let state = State.push_scope s (args @ locals) in
+            let scope = List.fold_left2 (fun s x v -> State.update x v s) state args params in
+            let (new_state, i, o) = eval env (scope, i, o) body in
+            (State.drop_scope new_state s, i, o)
+                                
     (* Statement parser *)
-    ostap (
-
-      parse: empty {failwith "Not yet implemented"}
-      (*call_statement:
+    ostap (                                      
+      call_statement:
         funct:IDENT "(" args:( !(Expr.parse) )* ")" { Call (funct, args) };
 
       statement: 
@@ -188,18 +182,18 @@ module Stmt =
               in If (what, first, expanded) 
             }
         | "while" what:!(Expr.parse) "do" body:!(parse) "od" { While (what, body) }
-        | "repeat" body:!(parse) "until" what:!(Expr.parse) { RepeatUntil (body, what) }
+        | "repeat" body:!(parse) "until" what:!(Expr.parse) { Repeat (body, what) }
         | "for" what:!(parse) "," cond:!(Expr.parse) "," step:!(parse) "do" body:!(parse)
           "od" { Seq (what, While (cond, Seq (body, step))) }
         | "skip" { Skip }
         | call:call_statement { call };
 
-      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement*)
-    ) 
+      parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
+    )
+      
   end
 
 (* Function and procedure definitions *)
-
 let get_or_default def_val = function
   | Some x -> x
   | _      -> def_val
@@ -210,14 +204,12 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (  
-                                          
-      parse: empty {failwith "Not yet implemented"}
-      (*
-        "fun" funct:IDENT "(" args:(IDENT)* ")"
-        locals:(%"local" (IDENT) ?
+    ostap (                                      
+      parse:
+      "fun" funct:IDENT "(" args:(IDENT)* ")"
+        locals:(%"local" (IDENT)*)?
         "{" body:!(Stmt.parse) "}"
-        { funct, (args, get_or_default [] locals, body) }*)
+        { funct, (args, get_or_default [] locals, body) }
     )
 
   end

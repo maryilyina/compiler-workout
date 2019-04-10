@@ -88,7 +88,7 @@ open SM
      compile : env -> prg -> env * instr list
 
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
-   of x86 instruct_ _ = failwith "Not yet implemented"ions
+   of x86 instructions
 *)
 
 let translate_comp_oper op = match op with
@@ -146,7 +146,7 @@ let rec compile_binop env op =
   in env, instr
 
 let rec compile env code = match code with
-  | [] -> env, [] (*)
+  | [] -> env, [] 
   | instr :: code' ->
       let env, asm = 
         match instr with
@@ -203,7 +203,7 @@ class env =
 	| []                            -> ebx     , 0
 	| (S n)::_                      -> S (n+1) , n+1
 	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-  | (M _)::s                      -> allocate' s
+        | (M _)::s                      -> allocate' s
 	| _                             -> S 0     , 1
 	in
 	allocate' stack
