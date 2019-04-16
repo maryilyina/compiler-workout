@@ -42,7 +42,7 @@ let rec eval env (control_stack, stack, (s, i, o)) p =
     match instr with
       | BINOP op  -> 
           let y :: x :: stack_rest = stack in 
-          eval env (control_stack, (Language.Expr.to_func op x y) :: stack_rest, (s, i, o)) rest
+          eval env (control_stack, (Expr.to_func op x y) :: stack_rest, (s, i, o)) rest
       | CONST c ->
           eval env (control_stack, c :: stack, (s, i, o)) rest
       | READ -> 
@@ -67,24 +67,18 @@ let rec eval env (control_stack, stack, (s, i, o)) p =
                       if z <> 0 then eval env (control_stack, stack_rest, (s, i, o)) (env#labeled label) 
                       else eval env (control_stack, stack_rest, (s, i, o)) rest)
       )
-      | BEGIN (args, locals) -> 
-          let scope = Language.State.push_scope s (args @ locals) in
-          let res_state, res_stack = List.fold_left
-              (fun (state, value::tail) name -> (State.update name value state, tail)) 
-              (scope, stack) args in
-            eval env (control_stack, res_stack, (res_state, i, o)) rest
-      | END -> (
-          let drop f_scope = State.drop_scope s f_scope in
-          match control_stack with
-          | (instr_before, st_before)::tail -> 
-                  eval env (tail, stack, (drop st_before, i, o)) instr_before
-          | [] -> [], stack, (s, i, o))
+      | BEGIN (_, args, locals) -> (
+          let updt = fun x ((v :: stack), s) -> (stack, State.update x v s) in
+          let (stack', s') = List.fold_right updt args (stack, State.enter s (args @ locals)) in
+          eval env (control_stack, stack', (s', i, o)) rest
+      )
+      | RET _ | END -> (match control_stack with
+          | (p', s')::tail -> eval env (tail, stack, (State.leave s s', i, o)) p'
+          | [] -> [], stack, (s, i, o)
+        )
+      | CALL (label, _, _) -> eval env ((p, s)::control_stack, stack, (s, i, o)) (JMP(label)::p)
 
-      | CALL func_id -> 
-          let func = env#labeled func_id in
-          eval env ((rest, s)::control_stack, stack, (s, i, o)) func
-
-      | _ -> failwith "Unsupported stack operation";;
+      | _ -> failwith "Unsupported stack operation" 
 
 (* Top-level evaluation
 
@@ -152,9 +146,13 @@ let rec compile_constr p after_label = match p with
         ([LABEL loop_label] @ repeat_body @ compile_expr what @ [CJMP ("z", loop_label)]), false
 
     | Stmt.Call (func, args) -> 
-        let compiled_args = List.flatten (List.map compile_expr (List.rev args)) in
-        compiled_args @ [CALL func], false
+        List.flatten (List.map (compile_expr) (List.rev args)) @ [CALL (func, List.length args, false)], false
 
+    | Stmt.Return e -> 
+        (match e with 
+          | Some x -> (compile_expr x) @ [RET true] 
+          | None -> [RET false]
+        ), false
 
 let rec compile_prog p = let label = lables_constr#get_label in
                     let prg, used = compile_constr p label in
@@ -165,6 +163,6 @@ let rec compile (defs, main) =
   let defs_compiled = 
       (let compile_definition (name, (params, locals, body)) = 
         (let compiled = compile_prog body in
-        [LABEL name; BEGIN (params, locals)] @ compiled @ [END]) in
+        [LABEL name; BEGIN (name, params, locals)] @ compiled @ [END]) in
       List.flatten (List.map compile_definition defs)) in
   main_compiled @ [END] @ defs_compiled

@@ -73,8 +73,42 @@ module Expr =
 
        which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
        an returns resulting configuration
-    *)                                                       
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+    *)                                                           let to_func op =
+          let bti   = function true -> 1 | _ -> 0 in
+          let itb b = b <> 0 in
+          let (|>) f g   = fun x y -> f (g x y) in
+          match op with
+          | "+"  -> (+)
+          | "-"  -> (-)
+          | "*"  -> ( * )
+          | "/"  -> (/)
+          | "%"  -> (mod)
+          | "<"  -> bti |> (< )
+          | "<=" -> bti |> (<=)
+          | ">"  -> bti |> (> )
+          | ">=" -> bti |> (>=)
+          | "==" -> bti |> (= )
+          | "!=" -> bti |> (<>)
+          | "&&" -> fun x y -> bti (itb x && itb y)
+          | "!!" -> fun x y -> bti (itb x || itb y)
+          | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
+
+    let rec eval env ((st, i, o, r) as conf) expr = match expr with
+          | Const n                 -> (st, i, o, Some n)
+          | Var x                   -> (st, i, o, Some (State.eval st x))
+          | Binop (op, x, y)        -> let ((_, _, _, Some a) as conf') = eval env conf x in
+                                       let (st', i', o', Some b)        = eval env conf' y in
+                                       (st', i', o', Some (to_func op a b))
+          | Call (name, params)     -> let (st', i', o', vals) =
+                                           List.fold_left
+                                           (
+                                                fun (st, i, o, vals) e ->
+                                                    let ((st, i, o, Some r) as conf) = eval env conf e in
+                                                    (st, i, o, vals @ [r])
+                                           ) (st, i, o, []) params in
+                                        env#definition env name vals (st', i', o', None)
+
+
          
     (* Expression parser. You can use the following terminals:
 
@@ -83,25 +117,25 @@ module Expr =
     *)
     ostap (                                      
       parse:
-	  !(Ostap.Util.expr 
+	      !(Ostap.Util.expr 
              (fun x -> x)
-	     (Array.map (fun (a, s) -> a, 
+	      (Array.map (fun (a, s) -> a, 
                            List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
                         ) 
               [|                
-		`Lefta, ["!!"];
-		`Lefta, ["&&"];
-		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-		`Lefta, ["+" ; "-"];
-		`Lefta, ["*" ; "/"; "%"];
+                `Lefta, ["!!"];
+                `Lefta, ["&&"];
+                `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+                `Lefta, ["+" ; "-"];
+                `Lefta, ["*" ; "/"; "%"];
               |] 
 	     )
 	     primary);
       
       primary:
         n:DECIMAL {Const n}
-      | x:IDENT   {Var x}
-      | -"(" parse -")"
+        | -"(" parse -")"
+        | name:IDENT p:("(" args:!(Ostap.Util.list0 parse) ")" {Call (name, args)} | empty {Var name}) {p}
     )
     
   end
@@ -130,41 +164,60 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    
-    let rec eval env (s, i, o) statement = match statement with
+
+    let meta_op s2 s1 =
+      match s2 with
+      | Skip -> s1
+      | _ -> Seq (s1, s2)
+
+    let rec eval env ((s, i, o, r) as conf) k statement = 
+       match statement with
         | Read x -> 
-            (let head::tail = i in
-            State.update x head s, tail, o)
-        | Write e       -> (s, i, o @ [Expr.eval s e])
-        | Assign (x, e) -> (State.update x (Expr.eval s e) s, i, o) 
-        | Seq    (a, b) -> eval env (eval env (s, i, o) a) b  
-        | If (what, first, second)  -> 
-              eval env (s, i, o) 
-              (if Expr.eval s what == 0 then second else first)
-        | While (what, body)  ->
-            (if Expr.eval s what == 0 then (s, i, o)
-            else 
-              let repeatition = While (what, body) in 
-              eval env (eval env (s, i, o) body) repeatition)
+            let head::tail = i in
+            eval env (State.update x head s, tail, o, None) Skip k
+        | Write e       -> 
+            let (s, i, o, Some r) = Expr.eval env conf e in 
+            eval env (s, i, o @ [r], None) Skip k
+
+        | Assign (x, e)              
+            -> let (s, i, o, Some r) = Expr.eval env conf e in
+            eval env (State.update x r s, i, o, Some r) Skip k
+        | Seq (a, b) -> eval env conf (meta_op k b) a
+        | Skip -> (
+            match k with
+            | Skip -> conf
+            | _ -> eval env conf Skip k
+          )
+        | Seq (a, b) -> eval env conf (meta_op k b) a
+        | If (cond, body1, body2)        
+            -> let ((s, i, o, Some r) as conf') = Expr.eval env conf cond in
+            if r != 0 then eval env conf' k body1
+            else eval env conf' k body2
+        | While (what, body) ->
+            let (s', i', o', Some n) = Expr.eval env conf what in
+            if n = 0 then
+                eval env (s', i', o', r) Skip k
+            else
+                eval env (s', i', o', r) (meta_op k statement) body
+
         | Repeat (body, what) ->
-            let repeatition = While (Expr.Binop ("==", what, Expr.Const 0), body) in
-              eval env (eval env (s, i, o) body) repeatition
-        | Skip -> (s, i, o)
-        | Call (func, param_exprs)    -> 
-            let (args, locals, body) = env#definition func in
-            let params = List.map (Expr.eval s) param_exprs in
-            let state = State.push_scope s (args @ locals) in
-            let scope = List.fold_left2 (fun s x v -> State.update x v s) state args params in
-            let (new_state, i, o) = eval env (scope, i, o) body in
-            (State.drop_scope new_state s, i, o)
-                                
+            eval env conf (meta_op k (While (Expr.Binop ("==", what, Expr.Const 0), body))) body
+        
+        | Call (name, params) -> 
+            eval env (Expr.eval env conf (Expr.Call (name, params))) Skip k
+        | Return x -> 
+            (match x with
+              | Some x -> Expr.eval env conf x
+              | None   -> conf
+            )
+
     (* Statement parser *)
     ostap (                                      
       call_statement:
         funct:IDENT "(" args:( !(Expr.parse) )* ")" { Call (funct, args) };
 
       statement: 
-          "read"    "("   x:IDENT        ")"  { Read   x    }
+          "read"    "("   x:IDENT         ")"  { Read   x    }
         | "write"   "("   e:!(Expr.parse) ")"  { Write  e    }
         | x:IDENT   ":="  e:!(Expr.parse)      { Assign(x, e)}
         
@@ -186,7 +239,8 @@ module Stmt =
         | "for" what:!(parse) "," cond:!(Expr.parse) "," step:!(parse) "do" body:!(parse)
           "od" { Seq (what, While (cond, Seq (body, step))) }
         | "skip" { Skip }
-        | call:call_statement { call };
+        | call: call_statement { call }
+        | "return" e:!(Expr.parse)? { Return e };
 
       parse: line:statement ";" tail:parse { Seq (line, tail) } | statement
     )
@@ -205,11 +259,16 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (                                      
-      parse:
-      "fun" funct:IDENT "(" args:(IDENT)* ")"
-        locals:(%"local" (IDENT)*)?
-        "{" body:!(Stmt.parse) "}"
-        { funct, (args, get_or_default [] locals, body) }
+      arg: IDENT;
+      parse: "fun" f:IDENT "(" args:!(Util.list0 arg) ")" locals:(%"local" !(Util.list arg))? "{" body:!(Stmt.parse) "}"
+      {
+          let locals =
+              match locals with
+              | Some x -> x
+              | _ -> []
+          in
+          f, (args, locals, body)
+      }
     )
 
   end
