@@ -113,21 +113,14 @@ let rec compile_binop env op =
   let r, l, env  = env#pop2 in
   let s, env = env#allocate in
   let instr = match op with
-    | "+" 
-    | "-" 
-    | "*"  -> (
+    | "+" | "-" | "*"  -> (
       match (l, r) with
         | (S _, S _) -> [Mov (l, eax); Binop (op, r, eax); Mov (eax, s)]
         | _  -> if s = l 
             then [Binop (op, r, l)] 
             else [Binop (op, r, l); Mov (l, s)]
       )
-    | "<=" 
-    | "<" 
-    | ">=" 
-    | ">" 
-    | "==" 
-    | "!=" -> (
+    | "<=" | "<" | ">=" | ">" | "==" | "!=" -> (
       match (l, r) with
         | (S _, S _) -> [Mov (l, edx)] @ compare op edx r s
         | _  -> compare op l r s
@@ -140,14 +133,13 @@ let rec compile_binop env op =
                 Binop ("cmp", L 0, r);  Set ("ne", "%dl");
                 Binop ("&&", edx, eax); Mov (eax, s)
               ]
-
     | _ -> failwith ("Not supported binary operand.")
 
   in env, instr
 
 
-let rec initImpl cnt = if cnt < 0 then [] else cnt :: initImpl (cnt - 1)
-let list_init cnt = List.rev (initImpl (cnt - 1))
+let rec rec_range cnt = if cnt < 0 then [] else cnt :: rec_range (cnt - 1)
+let range_list cnt = List.rev (rec_range (cnt - 1))
 
 let rec compile env code = match code with
   | [] -> env, [] 
@@ -164,30 +156,46 @@ let rec compile env code = match code with
             let s, env = env#pop in
             env, [Push s; Call "Lwrite"; Pop eax]
         | LD x ->
-          let s, env = (env#global x)#allocate in
-          env, [Mov (M ("global_" ^ x), eax); Mov (eax, s)]
+            let s, env = (env#global x)#allocate in
+            env, [Mov (env#loc x, eax); Mov (eax, s)]
         | ST x ->
-            let s, env = (env#global x)#pop in 
-            env, [Mov (s, eax); Mov (eax, M ("global_" ^ x))]
+            let s, env = (env#global x)#pop in
+            env, [Mov (s, eax); Mov (eax, env#loc x)]
+            
         | BINOP op ->
             compile_binop env op
         | LABEL l  -> env, [Label l]
+        
         | JMP l    -> env, [Jmp l]
-        | CJMP (cond, l) -> let h, env = env#pop in env, [Binop ("cmp", L 0, h); CJmp (cond, l)]
-        | CALL (name, nargs, flag) ->
-            let (env, args) = List.fold_left
-                (fun (env, args) _ -> let arg, env = env#pop in (env, arg::args))
-                (env, []) (list_init nargs) in
-            let (env, take_result) = if flag
-                then let (a, env) = env#allocate in env, [Mov (eax, a)]
-                else env, [] in
-            env, (List.map (fun x -> Push x) args) @ [Call name; Binop ("+", L (nargs * word_size), esp)] @ take_result
+        | CJMP (cond, l) -> 
+            let s, env = env#pop in env, [Binop ("cmp", L 0, s); CJmp (cond, l)]
+        | CALL (l, num_args, flag) ->
+            let push_regs, pop_regs = List.split @@ List.map (fun reg -> (Push reg, Pop reg)) env#live_registers in
+            let rec get_arguments env acc num_args =
+                match num_args with
+                | 0 -> env, acc
+                | n -> 
+                    let arg, env' = env#pop in
+                    get_arguments env' (Push arg :: acc) (n - 1)
+            in
+            let env', push_args = get_arguments env [] num_args in
+            let code =
+                if num_args = 0 then
+                    push_regs @ [Call l] @ (List.rev pop_regs)
+                else
+                    push_regs @ (List.rev push_args) @ [Call l; Binop ("+", L (num_args * word_size), esp)] @ (List.rev pop_regs)
+            in
+            if flag then
+                env', code
+            else
+                let addr, env'' = env'#allocate in
+                env'', code @ [Mov (eax, addr)]
         | BEGIN (name, params, locals) ->
-            let save_regs = List.map (fun x -> Push (R x)) (list_init num_of_regs) in
+            let save_regs = List.map (fun x -> Push (R x)) (range_list num_of_regs) in
             let env = env#enter name params locals in
             env, [Push ebp; Mov (esp, ebp)] @ save_regs @ [Binop ("-", M ("$" ^ env#lsize), esp)]
         | END ->
-            let restore_regs = List.map (fun x -> Pop (R x)) (List.rev (list_init num_of_regs)) in
+            let restore_regs = List.map (fun x -> Pop (R x)) (List.rev (range_list num_of_regs)) in
             env, [Label env#epilogue] @ restore_regs @ [Mov (ebp, esp); Pop ebp; Ret;
                   Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))]
         | RET flag ->
@@ -204,8 +212,8 @@ module S = Set.Make (String)
 
 (* Environment implementation *)
 let rec init_impl n = if n < 0 then [] else n :: init_impl (n - 1)
-let list_init n = List.rev (init_impl (n - 1))
-let make_assoc l = List.combine l (list_init (List.length l))
+let range_list n = List.rev (init_impl (n - 1))
+let make_assoc l = List.combine l (range_list (List.length l))
                      
 class env =
   object (self)

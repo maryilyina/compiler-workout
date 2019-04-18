@@ -40,45 +40,45 @@ let rec eval env (control_stack, stack, (s, i, o)) p =
   | [] -> (control_stack, stack, (s, i, o))
   | instr :: rest ->
     match instr with
-      | BINOP op  -> 
-          let y :: x :: stack_rest = stack in 
-          eval env (control_stack, (Expr.to_func op x y) :: stack_rest, (s, i, o)) rest
-      | CONST c ->
-          eval env (control_stack, c :: stack, (s, i, o)) rest
-      | READ -> 
-          let z :: stack_rest = i in
-          eval env (control_stack, z :: stack, (s, stack_rest, o)) rest
-      | WRITE -> 
-          let z :: stack_rest = stack in
-          eval env (control_stack, stack_rest, (s, i, o @ [z])) rest
-      | LD x -> 
-          eval env (control_stack, State.eval s x :: stack, (s, i, o)) rest
-      | ST x -> 
-          let z :: stack_rest = stack in
-          eval env (control_stack, stack_rest, ((State.update x z s), i, o)) rest
-      | LABEL x            -> eval env (control_stack, stack, (s, i, o)) rest
-      | JMP   label        -> eval env (control_stack, stack, (s, i, o)) (env#labeled label)
-      | CJMP  (cond, label) -> (
-        let z :: stack_rest = stack in match cond with 
-          | "z"  -> (
-                      if z <> 0 then eval env (control_stack, stack_rest, (s, i, o)) rest 
-                      else eval env (control_stack, stack_rest, (s, i, o)) (env#labeled label))
-          | "nz" -> (
-                      if z <> 0 then eval env (control_stack, stack_rest, (s, i, o)) (env#labeled label) 
-                      else eval env (control_stack, stack_rest, (s, i, o)) rest)
-      )
-      | BEGIN (_, args, locals) -> (
-          let updt = fun x ((v :: stack), s) -> (stack, State.update x v s) in
-          let (stack', s') = List.fold_right updt args (stack, State.enter s (args @ locals)) in
-          eval env (control_stack, stack', (s', i, o)) rest
-      )
-      | RET _ | END -> (match control_stack with
-          | (p', s')::tail -> eval env (tail, stack, (State.leave s s', i, o)) p'
-          | [] -> [], stack, (s, i, o)
+        | BINOP op  -> 
+            let y :: x :: stack_rest = stack in 
+            eval env (control_stack, (Expr.to_func op x y) :: stack_rest, (s, i, o)) rest
+        | CONST c ->
+            eval env (control_stack, c :: stack, (s, i, o)) rest
+        | READ -> 
+            let z :: stack_rest = i in
+            eval env (control_stack, z :: stack, (s, stack_rest, o)) rest
+        | WRITE -> 
+            let z :: stack_rest = stack in
+            eval env (control_stack, stack_rest, (s, i, o @ [z])) rest
+        | LD x -> 
+            eval env (control_stack, State.eval s x :: stack, (s, i, o)) rest
+        | ST x -> 
+            let z :: stack_rest = stack in
+            eval env (control_stack, stack_rest, ((State.update x z s), i, o)) rest
+        | LABEL x            -> eval env (control_stack, stack, (s, i, o)) rest
+        | JMP   label        -> eval env (control_stack, stack, (s, i, o)) (env#labeled label)
+            
+        | CJMP (znz, l) ->
+            let h :: t = stack in
+            if (h = 0 && znz = "z" || h <> 0 && znz = "nz") then
+                eval env (control_stack, t, (s, i, o)) (env#labeled l)
+            else
+                eval env (control_stack, t, (s, i, o)) rest
+        | BEGIN (_, args, locals) ->
+            let updt = fun x ((v :: stack), s) -> (stack, State.update x v s) in
+            let (stack', s') = List.fold_right updt args (stack, State.enter s (args @ locals)) in
+            eval env (control_stack, stack', (s', i, o)) rest
+        | END | RET _ -> (
+            match control_stack with
+            | (rest', s') :: control_stack' ->
+                let s'' = Language.State.leave s s' in
+                eval env (control_stack', stack, (s'', i, o)) rest'
+            | _ -> (control_stack, stack, (s, i, o))
         )
-      | CALL (label, _, _) -> eval env ((p, s)::control_stack, stack, (s, i, o)) (JMP(label)::p)
-
-      | _ -> failwith "Unsupported stack operation" 
+        | CALL (l, _, _) -> 
+            eval env ((rest, s) :: control_stack, stack, (s, i, o)) (env#labeled l)
+        | _ -> failwith "Unsupported stack operation" 
 
 (* Top-level evaluation
 
@@ -110,9 +110,11 @@ let lables_constr = object
 end
 
 let rec compile_expr e = match e with
-    | Expr.Var   x -> [LD x]
     | Expr.Const x -> [CONST x]
+    | Expr.Var   x -> [LD x]
     | Expr.Binop (op, e1, e2) -> compile_expr e1 @ compile_expr e2 @ [BINOP op]
+    | Expr.Call (func, params) -> 
+        List.concat (List.map compile_expr params) @ [CALL (func, List.length params, false)]
 
 let rec compile_constr p after_label = match p with
     | Stmt.Read  x        -> ([READ; ST x]), false

@@ -100,15 +100,11 @@ module Expr =
                                        let (st', i', o', Some b)        = eval env conf' y in
                                        (st', i', o', Some (to_func op a b))
           | Call (name, params)     -> let (st', i', o', vals) =
-                                           List.fold_left
-                                           (
-                                                fun (st, i, o, vals) e ->
-                                                    let ((st, i, o, Some r) as conf) = eval env conf e in
-                                                    (st, i, o, vals @ [r])
-                                           ) (st, i, o, []) params in
+                                          let update_state (st, i, o, vals) e =
+                                            let ((st, i, o, Some r) as conf) = eval env conf e in 
+                                            (st, i, o, vals @ [r]) in 
+                                            List.fold_left (update_state) (st, i, o, []) params in
                                         env#definition env name vals (st', i', o', None)
-
-
          
     (* Expression parser. You can use the following terminals:
 
@@ -165,51 +161,55 @@ module Stmt =
        environment is the same as for expressions
     *)
 
-    let meta_op s2 s1 =
+    let perform_or_skip s2 s1 =
       match s2 with
       | Skip -> s1
       | _ -> Seq (s1, s2)
+
+    let evaluate_expr e c expr =
+      Expr.eval e c expr
 
     let rec eval env ((s, i, o, r) as conf) k statement = 
        match statement with
         | Read x -> 
             let head::tail = i in
             eval env (State.update x head s, tail, o, None) Skip k
-        | Write e       -> 
-            let (s, i, o, Some r) = Expr.eval env conf e in 
+        | Write e -> 
+            let (s, i, o, Some r) = evaluate_expr env conf e in 
             eval env (s, i, o @ [r], None) Skip k
-
-        | Assign (x, e)              
-            -> let (s, i, o, Some r) = Expr.eval env conf e in
+        | Assign (x, e) -> 
+            let (s, i, o, Some r) = evaluate_expr env conf e in
             eval env (State.update x r s, i, o, Some r) Skip k
-        | Seq (a, b) -> eval env conf (meta_op k b) a
+        | Seq (a, b) -> 
+            eval env conf (perform_or_skip k b) a
         | Skip -> (
             match k with
             | Skip -> conf
             | _ -> eval env conf Skip k
-          )
-        | Seq (a, b) -> eval env conf (meta_op k b) a
-        | If (cond, body1, body2)        
-            -> let ((s, i, o, Some r) as conf') = Expr.eval env conf cond in
+        )
+        | Seq (a, b) -> eval env conf (perform_or_skip k b) a
+        | If (what, body1, body2) -> 
+            let ((s, i, o, Some r) as conf') = evaluate_expr env conf what in
             if r != 0 then eval env conf' k body1
             else eval env conf' k body2
         | While (what, body) ->
-            let (s', i', o', Some n) = Expr.eval env conf what in
+            let (s', i', o', Some n) = evaluate_expr env conf what in
             if n = 0 then
                 eval env (s', i', o', r) Skip k
             else
-                eval env (s', i', o', r) (meta_op k statement) body
+                eval env (s', i', o', r) (perform_or_skip k statement) body
 
         | Repeat (body, what) ->
-            eval env conf (meta_op k (While (Expr.Binop ("==", what, Expr.Const 0), body))) body
+          let repeatition = Expr.Binop ("==", what, Expr.Const 0) in 
+          eval env conf (perform_or_skip k (While (repeatition, body))) body
+
         
         | Call (name, params) -> 
-            eval env (Expr.eval env conf (Expr.Call (name, params))) Skip k
+            eval env (evaluate_expr env conf (Expr.Call (name, params))) Skip k
         | Return x -> 
-            (match x with
-              | Some x -> Expr.eval env conf x
+            match x with
+              | Some x -> evaluate_expr env conf x
               | None   -> conf
-            )
 
     (* Statement parser *)
     ostap (                                      
@@ -260,15 +260,12 @@ module Definition =
 
     ostap (                                      
       arg: IDENT;
-      parse: "fun" f:IDENT "(" args:!(Util.list0 arg) ")" locals:(%"local" !(Util.list arg))? "{" body:!(Stmt.parse) "}"
-      {
-          let locals =
-              match locals with
-              | Some x -> x
-              | _ -> []
-          in
-          f, (args, locals, body)
-      }
+      parse: 
+        "fun" 
+        f:IDENT "(" args:!(Util.list0 arg) ")" 
+        locals:(%"local" !(Util.list arg))? 
+        "{" body:!(Stmt.parse) "}"
+        { f, (args, get_or_default [] locals, body) }
     )
 
   end
