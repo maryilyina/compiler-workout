@@ -84,30 +84,127 @@ let show instr =
 open SM
 
 (* Symbolic stack machine evaluator
-
      compile : env -> prg -> env * instr list
-
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code =
-  let suffix = function
+
+let translate_comp_oper op = match op with
   | "<"  -> "l"
   | "<=" -> "le"
+  | ">"  -> "g"
+  | ">=" -> "ge"
   | "==" -> "e"
   | "!=" -> "ne"
-  | ">=" -> "ge"
-  | ">"  -> "g"
-  | _    -> failwith "unknown operator"	
-  in
-  let rec compile' env scode = failwith "Not implemented" in
-  compile' env code
+  | _    -> failwith ("Not supported bool operator.")
+
+let clear reg = 
+  Binop ("^", reg, reg)
+
+let divide l r s reg = 
+  [Mov (l, eax); clear edx; Cltd; IDiv r; Mov (reg, s)]
+
+let compare op l r s = 
+  [clear eax; Binop ("cmp", r, l); Set (translate_comp_oper op, "%al"); Mov (eax, s)]
+
+let rec compile_binop env op = 
+  let r, l, env  = env#pop2 in
+  let s, env = env#allocate in
+  let instr = match op with
+    | "+" | "-" | "*"  -> (
+      match (l, r) with
+        | (S _, S _) -> [Mov (l, eax); Binop (op, r, eax); Mov (eax, s)]
+        | _  -> if s = l 
+            then [Binop (op, r, l)] 
+            else [Binop (op, r, l); Mov (l, s)]
+      )
+    | "<=" | "<" | ">=" | ">" | "==" | "!=" -> (
+      match (l, r) with
+        | (S _, S _) -> [Mov (l, edx)] @ compare op edx r s
+        | _  -> compare op l r s
+      )
+    | "/"  -> divide l r s eax       
+    | "%"  -> divide l r s edx
+    | "!!" -> [clear eax; Mov (l, edx); Binop ("!!", r, edx); Set ("nz", "%al"); Mov (eax, s)]
+    | "&&" -> [ clear eax; clear edx; 
+                Binop ("cmp", L 0, l);  Set ("ne", "%al");
+                Binop ("cmp", L 0, r);  Set ("ne", "%dl");
+                Binop ("&&", edx, eax); Mov (eax, s)
+              ]
+    | _ -> failwith ("Not supported binary operand.")
+
+  in env, instr
+
+
+let rec rec_range cnt = if cnt < 0 then [] else cnt :: rec_range (cnt - 1)
+let range_list cnt = List.rev (rec_range (cnt - 1))
+
+let rec compile env code = match code with
+  | [] -> env, [] 
+  | instr :: code' ->
+      let env, asm = 
+        match instr with
+        | CONST n -> 
+            let s, env = env#allocate in 
+            env, [Mov (L n, s)]
+        | LD x ->
+            let s, env = (env#global x)#allocate in
+            env, [Mov (env#loc x, eax); Mov (eax, s)]
+        | ST x ->
+            let s, env = (env#global x)#pop in
+            env, [Mov (s, eax); Mov (eax, env#loc x)]
+        | BINOP op ->
+            compile_binop env op
+        | LABEL l  -> env, [Label l]
+        
+        | JMP l    -> env, [Jmp l]
+        | CJMP (cond, l) -> 
+            let s, env = env#pop in env, [Binop ("cmp", L 0, s); CJmp (cond, l)]
+        | CALL (l, num_args, flag) ->
+            let push_regs, pop_regs = List.split @@ List.map (fun reg -> (Push reg, Pop reg)) env#live_registers in
+            let rec get_arguments env num_args = (
+                match num_args with
+                | 0 -> env, []
+                | n ->
+                    let arg, env' = env#pop in
+                    let env'', ar = get_arguments env' (n - 1) in
+                    env'', ar @ [Push arg])
+            in
+            let env', push_args = get_arguments env num_args in
+            let env'', res = 
+                if flag then
+                    let x, env'' = env'#allocate in
+                    env'', [Mov (eax, x)]
+                else
+                    env', []
+            in
+            if l = "read" then
+                env'', push_regs @ push_args @ [Call "Lread";  Binop ("+", L (num_args * word_size), esp)] @ pop_regs @ res
+            else
+                env'', push_regs @ push_args @ [Call "Lwrite"; Binop ("+", L (num_args * word_size), esp)] @ pop_regs @ res
+        | BEGIN (name, params, locals) ->
+            let save_regs = List.map (fun x -> Push (R x)) (range_list num_of_regs) in
+            let env = env#enter name params locals in
+            env, [Push ebp; Mov (esp, ebp)] @ save_regs @ [Binop ("-", M ("$" ^ env#lsize), esp)]
+        | END ->
+            let restore_regs = List.map (fun x -> Pop (R x)) (List.rev (range_list num_of_regs)) in
+            env, [Label env#epilogue] @ restore_regs @ [Mov (ebp, esp); Pop ebp; Ret;
+                  Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))]
+        | RET flag ->
+            if flag
+            then let a, env = env#pop in env, [Mov (a, eax); Jmp env#epilogue]
+            else env, [Jmp env#epilogue]
+        | _ -> failwith("Not supported instruction.")
+    in
+      let env, asm' = compile env code' in 
+      env, asm @ asm'
+
 
 (* A set of strings *)           
 module S = Set.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let make_assoc l = List.combine l (Language.list_init 0 (List.length l) (fun x -> x))
                      
 class env =
   object (self)
@@ -195,5 +292,4 @@ let build prog name =
   Printf.fprintf outf "%s" (genasm prog);
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
-  Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
- 
+Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
